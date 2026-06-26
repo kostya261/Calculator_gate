@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Виртуальное окружение
+.venv/
+venv/
+ENV/
+
+# PyCharm
+.idea/
+*.iml
+
+# Файлы пользователя
+user_config.json
+
+# База данных (локальная)
+*.db
+*.sqlite
+*.sqlite3
+
+# Логи
+*.log
+
+# Временные файлы
+*.tmp
+*.temp
+
+# Конфиги с паролями (если не хочешь публиковать)
+config.ini
