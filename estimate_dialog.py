@@ -756,10 +756,15 @@ class EstimateDialog(QDialog):
     def refresh_from_materials(self):
         reply = QMessageBox.question(
             self, "Подтверждение",
-            "Обновить смету из текущего расчёта? Все ручные изменения будут потеряны.",
+            "Обновить смету из текущего расчёта?\n"
+            "⚠️ Все ручные изменения будут потеряны!",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
+            # Получаем родительское окно (MainWindow) и запрашиваем свежий расчёт
+            parent = self.parent()
+            if parent and hasattr(parent, '_prepare_estimate_items'):
+                self.materials = parent._prepare_estimate_items()
             self.load_data()
 
     def save_estimate(self):
@@ -924,6 +929,91 @@ class EstimateDialog(QDialog):
             QMessageBox.information(self, "Готово", f"Смета сохранена (ID: {estimate_id})")
         else:
             QMessageBox.warning(self, "Ошибка", "Не удалось сохранить смету!")
+
+    def sync_materials_from_table(self):
+        """Обновляет self.materials из текущей таблицы"""
+        self.materials = []
+        current_kit = None  # текущий комплект для сбора детей
+
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, 1)
+            if not name_item:
+                continue
+            name = name_item.text()
+
+            is_kit_row = name.startswith("📦")
+            is_child_row = name.startswith("  ├──")
+            is_paint = 'Покраска' in name
+
+            if is_child_row:
+                # Добавляем в текущий комплект
+                if current_kit:
+                    try:
+                        qty = float(self.table.item(row, 2).text()) if self.table.item(row, 2) else 1
+                    except:
+                        qty = 1
+                    try:
+                        price = float(self.table.item(row, 5).text()) if self.table.item(row, 5) else 0
+                    except:
+                        price = 0
+                    unit = self.table.item(row, 4).text() if self.table.item(row, 4) else "шт"
+                    child_name = name.replace("  ├── ", "")
+
+                    current_kit['kit_items'].append({
+                        'material_name': child_name,
+                        'quantity': qty,
+                        'unit': unit,
+                        'material_price': price
+                    })
+                continue
+
+            # Обычная строка или комплект
+            try:
+                length_val = float(self.table.item(row, 2).text()) if self.table.item(row, 2) else 0
+            except (ValueError, AttributeError):
+                length_val = 0
+
+            try:
+                price = float(self.table.item(row, 5).text()) if self.table.item(row, 5) else 0
+            except (ValueError, AttributeError):
+                price = 0
+
+            try:
+                weight = float(self.table.item(row, 7).text()) if self.table.item(row, 7) else 0
+            except (ValueError, AttributeError):
+                weight = 0
+
+            unit = self.table.item(row, 4).text() if self.table.item(row, 4) else "м.п."
+
+            qty_item = self.table.item(row, 3)
+            sticks = 1
+            if qty_item:
+                qty_data = qty_item.data(Qt.ItemDataRole.UserRole)
+                if qty_data:
+                    sticks = int(qty_data)
+
+            mat = {
+                'name': name.replace("📦 ", ""),
+                'profile': name.replace("📦 ", ""),
+                'length_mm': length_val * 1000 if unit == 'м.п.' else 0,
+                'length_for_payment_mm': length_val * 1000,
+                'sticks': sticks,
+                'remainder_mm': 0,
+                'remainder_for_client': 0,
+                'weight': weight,
+                'price': price,
+                'unit': unit,
+                'is_paint': is_paint,
+                'is_kit': is_kit_row,
+                'kit_items': []
+            }
+
+            self.materials.append(mat)
+
+            if is_kit_row:
+                current_kit = mat
+            else:
+                current_kit = None
 
     def _collect_table_data(self):
         rows = []

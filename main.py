@@ -264,7 +264,8 @@ class MainWindow(QMainWindow):
         self.current_client_address = "Не указан"
         self.current_user = None
         self.current_paint_enabled = False
-        #self.current_estimate_dialog = None
+        self.current_estimate_dialog = None
+        self.estimate_buffer = None
         self.create_menu()
         self.init_ui()
         self.update_all()
@@ -860,28 +861,8 @@ class MainWindow(QMainWindow):
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка", f"Введите корректные числа!\n{e}")
 
-    def open_estimate(self):
-        from estimate_dialog import EstimateDialog
-        if not self.current_materials:
-            QMessageBox.warning(self, "Ошибка", "Сначала выполните расчёт!")
-            return
-
-        estimate_items = self._prepare_estimate_items()
-        if not estimate_items:
-            return
-
-        dialog = EstimateDialog(
-            estimate_items,
-            self.current_client_name,
-            self.current_client_address,
-            self,
-            cutting_data=self.calculate_cutting(self.current_materials),
-            paint_enabled=self.paint_check.isChecked(),
-            current_user=self.current_user
-        )
-        dialog.exec()
-
     def _prepare_estimate_items(self):
+        """Подготавливает список позиций из текущего расчёта"""
         cutting_data = self.calculate_cutting(self.current_materials)
 
         profile_groups = {}
@@ -958,6 +939,7 @@ class MainWindow(QMainWindow):
                 'unit': 'м.п.'
             })
 
+        # Покраска
         paint_enabled = self.paint_check.isChecked()
         total_paint_area = sum(data['total_area'] for data in profile_groups.values())
 
@@ -989,15 +971,37 @@ class MainWindow(QMainWindow):
 
         return estimate_items
 
-    def _add_calculation_to_estimate(self, dialog):
-        estimate_items = self._prepare_estimate_items()
-        if not estimate_items:
+    def open_estimate(self):
+        from estimate_dialog import EstimateDialog
+        if not self.current_materials:
+            QMessageBox.warning(self, "Ошибка", "Сначала выполните расчёт!")
             return
 
-        for item in estimate_items:
-            dialog.materials.append(item)
+        # Если буфера нет — создаём из текущего расчёта
+        if not hasattr(self, 'estimate_buffer') or not self.estimate_buffer:
+            self.estimate_buffer = self._prepare_estimate_items()
+        else:
+            # Буфер уже есть — обновляем только расчётные позиции, сохраняя ручные
+            new_calc = self._prepare_estimate_items()
+            # Удаляем старые расчётные позиции (у них нет is_kit)
+            # и оставляем ручные (добавленные через каталог)
+            manual_items = [m for m in self.estimate_buffer if m.get('is_kit', False)]
+            # Заменяем буфер: новый расчёт + старые ручные
+            self.estimate_buffer = new_calc + manual_items
 
-        dialog.load_data()
+        dialog = EstimateDialog(
+            self.estimate_buffer,
+            self.current_client_name,
+            self.current_client_address,
+            self,
+            cutting_data=self.calculate_cutting(self.current_materials),
+            paint_enabled=self.paint_check.isChecked(),
+            current_user=self.current_user
+        )
+        dialog.exec()
+
+        dialog.sync_materials_from_table()
+        self.estimate_buffer = dialog.materials
 
     def open_estimate_list(self):
         from estimate_list_dialog import EstimateListDialog
