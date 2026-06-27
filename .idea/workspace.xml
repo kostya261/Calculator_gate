@@ -6,8 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="ce4f12cf-2b7b-44bc-873e-b9da28a2d53a" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/estimate_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/estimate_dialog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/material_tree_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/material_tree_dialog.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Смета_Не выбран_20260626.pdf" beforeDir="false" afterPath="$PROJECT_DIR$/Смета_Не выбран_20260626.pdf" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -51,33 +50,33 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "Python.client_dialog.executor": "Run",
-    "Python.db.executor": "Run",
-    "Python.estimate_dialog.executor": "Run",
-    "Python.estimate_list_dialog.executor": "Run",
-    "Python.gate_designer.executor": "Run",
-    "Python.login_dialog.executor": "Run",
-    "Python.main.executor": "Run",
-    "Python.material_dialog.executor": "Run",
-    "Python.test_qt.executor": "Run",
-    "Python.unit_dialog.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "new__version",
-    "ignore.virus.scanning.warn.message": "true",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "org.jetbrains.plugins.github.ui.GithubSettingsConfigurable",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;Python.client_dialog.executor&quot;: &quot;Run&quot;,
+    &quot;Python.db.executor&quot;: &quot;Run&quot;,
+    &quot;Python.estimate_dialog.executor&quot;: &quot;Run&quot;,
+    &quot;Python.estimate_list_dialog.executor&quot;: &quot;Run&quot;,
+    &quot;Python.gate_designer.executor&quot;: &quot;Run&quot;,
+    &quot;Python.login_dialog.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.material_dialog.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test_qt.executor&quot;: &quot;Run&quot;,
+    &quot;Python.unit_dialog.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;new__version&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;org.jetbrains.plugins.github.ui.GithubSettingsConfigurable&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -106,7 +105,8 @@
       <workItem from="1782110179149" duration="6846000" />
       <workItem from="1782195156351" duration="10072000" />
       <workItem from="1782301810295" duration="5923000" />
-      <workItem from="1782455877944" duration="6692000" />
+      <workItem from="1782455877944" duration="9769000" />
+      <workItem from="1782541471109" duration="1021000" />
     </task>
     <servers />
   </component>
@@ -138,7 +138,7 @@
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Calculator$estimate_dialog.coverage" NAME="estimate_dialog Coverage Results" MODIFIED="1782459841910" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/Calculator$main.coverage" NAME="main Coverage Results" MODIFIED="1782462452050" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/Calculator$main.coverage" NAME="main Coverage Results" MODIFIED="1782542721735" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Calculator$db.coverage" NAME="db Coverage Results" MODIFIED="1781694091560" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Calculator$material_dialog.coverage" NAME="material_dialog Coverage Results" MODIFIED="1781938572973" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/Calculator$client_dialog.coverage" NAME="client_dialog Coverage Results" MODIFIED="1781765111933" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />

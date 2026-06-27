@@ -141,7 +141,7 @@ class MaterialTreeDialog(QDialog):
             })
             item.setIcon(0, self._get_icon_for_type('category'))
             # Делаем категорию невыбираемой
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            #item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
 
             items_dict[cat['id']] = item
 
