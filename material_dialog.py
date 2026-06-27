@@ -357,9 +357,9 @@ class MaterialEditDialog(QDialog):
     def __init__(self, parent=None, material_id=None, parent_id=None):
         super().__init__(parent)
         self.material_id = material_id
-        self.parent_id = parent_id  # ← ИСПРАВЛЕНО!
+        self.parent_id = parent_id
         self.setWindowTitle("Редактирование материала" if material_id else "Новый материал")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(480)
 
         layout = QVBoxLayout(self)
         form_layout = QFormLayout()
@@ -386,6 +386,20 @@ class MaterialEditDialog(QDialog):
         self.retail_price_edit.setPlaceholderText("0.00")
         form_layout.addRow("Розничная цена:", self.retail_price_edit)
 
+        # ⚠️ КАТЕГОРИЯ С КНОПКОЙ ...
+        category_layout = QHBoxLayout()
+        self.parent_combo = QComboBox()
+        self.parent_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        category_layout.addWidget(self.parent_combo)
+
+        self.category_btn = QPushButton("...")
+        self.category_btn.setFixedWidth(30)
+        self.category_btn.setToolTip("Выбрать категорию из дерева")
+        self.category_btn.clicked.connect(self.select_category_from_tree)
+        category_layout.addWidget(self.category_btn)
+
+        form_layout.addRow("Категория:", category_layout)
+
         self.desc_edit = QTextEdit()
         self.desc_edit.setMaximumHeight(80)
         form_layout.addRow("Описание:", self.desc_edit)
@@ -403,6 +417,7 @@ class MaterialEditDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
+        self.load_categories()
         if material_id:
             self.load_data()
 
@@ -411,6 +426,35 @@ class MaterialEditDialog(QDialog):
         self.unit_combo.clear()
         for unit in units:
             self.unit_combo.addItem(unit['name'], unit['id'])
+
+    def load_categories(self):
+        """Загружает все категории в выпадающий список"""
+        self.parent_combo.clear()
+        self.parent_combo.addItem("(Корневая категория)", None)
+
+        materials = db.get_materials_hierarchy()
+        categories = [m for m in materials if m.get('is_category', False)]
+        categories.sort(key=lambda x: x['name'])
+
+        for cat in categories:
+            indent = "  " * (self._get_category_depth(cat['id'], categories))
+            self.parent_combo.addItem(f"{indent}📁 {cat['name']}", cat['id'])
+
+    def _get_category_depth(self, category_id, categories):
+        """Вычисляет глубину вложенности категории"""
+        depth = 0
+        current_id = category_id
+        while True:
+            parent = None
+            for cat in categories:
+                if cat['id'] == current_id:
+                    parent = cat['parent_id']
+                    break
+            if parent is None:
+                break
+            depth += 1
+            current_id = parent
+        return depth
 
     def load_data(self):
         material = db.get_material_by_id(self.material_id)
@@ -432,6 +476,31 @@ class MaterialEditDialog(QDialog):
             self.purchase_price_edit.setText(f"{purchase:.2f}")
             self.retail_price_edit.setText(f"{retail:.2f}")
             self.desc_edit.setText(material['description'] or '')
+
+            # Устанавливаем родительскую категорию
+            parent_id = material.get('parent_id')
+            if parent_id is not None:
+                index = self.parent_combo.findData(parent_id)
+                if index >= 0:
+                    self.parent_combo.setCurrentIndex(index)
+                else:
+                    self.parent_combo.setCurrentIndex(0)
+            else:
+                self.parent_combo.setCurrentIndex(0)
+
+    def select_category_from_tree(self):
+        """Открывает диалог выбора категории с деревом"""
+        current_id = self.parent_combo.currentData()
+        dialog = SelectCategoryDialog(self, current_id)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_id = dialog.get_selected_id()
+            if selected_id is not None:
+                index = self.parent_combo.findData(selected_id)
+                if index >= 0:
+                    self.parent_combo.setCurrentIndex(index)
+            else:
+                # Корневая категория
+                self.parent_combo.setCurrentIndex(0)
 
     def save(self):
         name = self.name_edit.text().strip()
@@ -465,16 +534,158 @@ class MaterialEditDialog(QDialog):
         unit = self.unit_combo.currentText()
         description = self.desc_edit.toPlainText().strip()
 
+        parent_id = self.parent_combo.currentData()
+
         if self.material_id:
             success = db.update_material(
-                self.material_id, name, unit, weight, purchase_price, retail_price, sku, description, self.parent_id
+                self.material_id, name, unit, weight, purchase_price, retail_price, sku, description, parent_id
             )
         else:
             success = db.add_material(
-                name, unit, weight, purchase_price, retail_price, sku, description, self.parent_id
+                name, unit, weight, purchase_price, retail_price, sku, description, parent_id
             )
 
         if success:
             self.accept()
         else:
             QMessageBox.warning(self, "Ошибка", "Не удалось сохранить материал!")
+
+
+class SelectCategoryDialog(QDialog):
+    """Диалог выбора категории с деревом и поиском"""
+    def __init__(self, parent=None, selected_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Выбор категории")
+        self.setMinimumSize(500, 450)
+        self.selected_id = selected_id
+        self.result_id = None
+        self.all_categories = []
+
+        layout = QVBoxLayout(self)
+
+        hint = QLabel("Выберите категорию для материала. Можно оставить пустым (корневая категория).")
+        hint.setStyleSheet("background-color: #f0f0f0; padding: 8px; border-radius: 4px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        # ===== СТРОКА ПОИСКА =====
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("🔍 Поиск:"))
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Введите название категории...")
+        self.search_input.textChanged.connect(self.filter_categories)
+        search_layout.addWidget(self.search_input)
+        layout.addLayout(search_layout)
+
+        # ===== ДЕРЕВО КАТЕГОРИЙ =====
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Категории"])
+        self.tree.setColumnWidth(0, 400)
+        self.tree.itemDoubleClicked.connect(self.select_item)
+        layout.addWidget(self.tree)
+
+        btn_layout = QHBoxLayout()
+
+        self.select_btn = QPushButton("✅ Выбрать")
+        self.select_btn.clicked.connect(self.select_item)
+        btn_layout.addWidget(self.select_btn)
+
+        self.clear_btn = QPushButton("🗑️ Очистить (корневая)")
+        self.clear_btn.clicked.connect(self.clear_selection)
+        btn_layout.addWidget(self.clear_btn)
+
+        self.cancel_btn = QPushButton("❌ Отмена")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        self.load_data()
+
+    def load_data(self):
+        """Загружает все категории в дерево"""
+        self.tree.clear()
+
+        materials = db.get_materials_hierarchy()
+        self.all_categories = [m for m in materials if m.get('is_category', False)]
+        self.all_categories.sort(key=lambda x: x['name'])
+
+        self._build_tree(self.all_categories)
+
+    def _build_tree(self, categories):
+        """Строит дерево из переданного списка категорий"""
+        self.tree.clear()
+
+        items_dict = {}
+
+        # Создаём элементы для всех категорий
+        for cat in categories:
+            item = QTreeWidgetItem()
+            item.setText(0, f"📁 {cat['name']}")
+            item.setData(0, Qt.ItemDataRole.UserRole, cat['id'])
+            items_dict[cat['id']] = item
+
+            # Если это выбранная категория — выделяем её
+            if self.selected_id == cat['id']:
+                item.setSelected(True)
+
+        # Прикрепляем к родителям
+        for cat in categories:
+            if cat['parent_id'] is None:
+                if cat['id'] in items_dict:
+                    self.tree.addTopLevelItem(items_dict[cat['id']])
+            else:
+                parent_item = items_dict.get(cat['parent_id'])
+                if parent_item and cat['id'] in items_dict:
+                    parent_item.addChild(items_dict[cat['id']])
+
+        self.tree.expandAll()
+        self.tree.resizeColumnToContents(0)
+
+    def filter_categories(self):
+        """Фильтрует категории по поиску"""
+        query = self.search_input.text().strip().lower()
+
+        if not query:
+            # Показываем все категории
+            self._build_tree(self.all_categories)
+            return
+
+        # Фильтруем категории, которые содержат запрос
+        filtered = []
+        for cat in self.all_categories:
+            if query in cat['name'].lower():
+                filtered.append(cat)
+
+        # Также добавляем родителей отфильтрованных категорий
+        # (чтобы сохранить иерархию)
+        parent_ids = set()
+        for cat in filtered:
+            if cat['parent_id'] is not None:
+                parent_ids.add(cat['parent_id'])
+
+        # Добавляем всех родителей в результат
+        for cat in self.all_categories:
+            if cat['id'] in parent_ids and cat not in filtered:
+                filtered.append(cat)
+
+        self._build_tree(filtered)
+
+    def select_item(self):
+        """Выбирает категорию"""
+        item = self.tree.currentItem()
+        if not item:
+            QMessageBox.warning(self, "Ошибка", "Выберите категорию!")
+            return
+
+        self.result_id = item.data(0, Qt.ItemDataRole.UserRole)
+        self.accept()
+
+    def clear_selection(self):
+        """Очищает выбор (корневая категория)"""
+        self.result_id = None
+        self.accept()
+
+    def get_selected_id(self):
+        return self.result_id
