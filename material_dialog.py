@@ -428,33 +428,35 @@ class MaterialEditDialog(QDialog):
             self.unit_combo.addItem(unit['name'], unit['id'])
 
     def load_categories(self):
-        """Загружает все категории в выпадающий список"""
+        """Загружает все категории в выпадающий список с правильными отступами"""
         self.parent_combo.clear()
         self.parent_combo.addItem("(Корневая категория)", None)
 
         materials = db.get_materials_hierarchy()
         categories = [m for m in materials if m.get('is_category', False)]
-        categories.sort(key=lambda x: x['name'])
 
-        for cat in categories:
-            indent = "  " * (self._get_category_depth(cat['id'], categories))
-            self.parent_combo.addItem(f"{indent}📁 {cat['name']}", cat['id'])
+        # Находим корневые категории (parent_id IS NULL)
+        root_cats = [cat for cat in categories if cat['parent_id'] is None]
+        root_cats.sort(key=lambda x: x['name'])
+
+        # Рекурсивно добавляем категории с отступами
+        def add_category_with_indent(cat, indent=0):
+            display_name = "  " * indent + f"📁 {cat['name']}"
+            self.parent_combo.addItem(display_name, cat['id'])
+
+            # Находим дочерние категории
+            children = [c for c in categories if c['parent_id'] == cat['id']]
+            children.sort(key=lambda x: x['name'])
+            for child in children:
+                add_category_with_indent(child, indent + 1)
+
+        # Добавляем все корневые категории
+        for root_cat in root_cats:
+            add_category_with_indent(root_cat)
 
     def _get_category_depth(self, category_id, categories):
-        """Вычисляет глубину вложенности категории"""
-        depth = 0
-        current_id = category_id
-        while True:
-            parent = None
-            for cat in categories:
-                if cat['id'] == current_id:
-                    parent = cat['parent_id']
-                    break
-            if parent is None:
-                break
-            depth += 1
-            current_id = parent
-        return depth
+        """Больше не нужен, но оставляем для совместимости"""
+        return 0
 
     def load_data(self):
         material = db.get_material_by_id(self.material_id)
