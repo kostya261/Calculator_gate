@@ -6,12 +6,10 @@ from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from collections import defaultdict
-from material_dialog import MaterialDialog
 from material_tree_dialog import MaterialTreeDialog
 from unit_dialog import UnitDialog
 from client_dialog import ClientDialog
 from client_selector import ClientSelector
-import config
 import db
 
 
@@ -939,35 +937,93 @@ class MainWindow(QMainWindow):
                 'unit': 'м.п.'
             })
 
-        # Покраска
+        # ============================================================
+        # ОБНОВЛЕННАЯ ПОКРАСКА с использованием новых полей
+        # ============================================================
         paint_enabled = self.paint_check.isChecked()
         total_paint_area = sum(data['total_area'] for data in profile_groups.values())
 
         if paint_enabled and total_paint_area > 0:
-            paint_price = 0.0
-            for m in materials_db:
-                if 'покраск' in m['name'].lower():
-                    paint_price = float(m['retail_price']) if m['retail_price'] else 0.0
+            # Ищем комплект "Покраска" в БД
+            kits = db.get_all_kits()
+            paint_kit = None
+            for kit in kits:
+                if kit['name'] == 'Покраска':
+                    paint_kit = db.get_kit_by_id(kit['id'])
                     break
 
-            if paint_price > 0:
-                estimate_items.append({
-                    'name': 'Покраска',
-                    'profile': 'Покраска',
-                    'length_mm': total_paint_area * 1000,
-                    'length_for_payment_mm': total_paint_area * 1000,
-                    'sticks': 1,
-                    'remainder_mm': 0,
-                    'remainder_for_client': 0,
-                    'weight': 0,
-                    'price': paint_price,
-                    'unit': 'м²',
-                    'is_paint': True
-                })
+            if paint_kit:
+                # Получаем позиции комплекта с новыми полями
+                kit_items_full = db.get_kit_items_full(paint_kit['id'])
+
+                if kit_items_full:
+                    kit_items = []
+                    total_kit_price = 0
+
+                    # Контекст для расчета
+                    context = {
+                        'area': total_paint_area,
+                        'length': total_paint_area * 1000,  # условно
+                        'width': 0,
+                        'quantity': 1
+                    }
+
+                    for item in kit_items_full:
+                        # Рассчитываем количество по новым правилам
+                        quantity = db.calculate_kit_item_quantity(item, context)
+
+                        # Если количество получилось 0 или очень маленькое - пропускаем
+                        if quantity <= 0.001:
+                            print(f"⚠️ Пропускаем {item['material_name']}: количество {quantity} слишком мало")
+                            continue
+
+                        # Округляем вверх до 2 знаков для расходных материалов
+                        if item.get('calculation_type') in ['per_m2', 'per_m']:
+                            quantity = math.ceil(quantity * 100) / 100
+
+                        subtotal = quantity * item['material_price']
+                        total_kit_price += subtotal
+
+                        kit_items.append({
+                            'material_name': item['material_name'],
+                            'quantity': quantity,
+                            'unit': item.get('unit', item.get('material_unit', 'шт')),
+                            'material_price': item['material_price'],
+                            'subtotal': subtotal,
+                            'calculation_type': item.get('calculation_type', 'fixed'),
+                            'consumption': item.get('consumption_per_unit', 0)
+                        })
+
+                    if kit_items:
+                        estimate_items.append({
+                            'name': 'Покраска',
+                            'profile': 'Покраска',
+                            'length_mm': 0,
+                            'length_for_payment_mm': 0,
+                            'sticks': 1,
+                            'remainder_mm': 0,
+                            'remainder_for_client': 0,
+                            'weight': 0,
+                            'price': total_kit_price,
+                            'unit': 'комплект',
+                            'is_kit': True,
+                            'is_paint': True,
+                            'kit_items': kit_items
+                        })
+                        print(
+                            f"✅ Добавлен комплект покраски: {len(kit_items)} позиций, сумма {total_kit_price:.2f} руб")
+                    else:
+                        QMessageBox.warning(self, "Внималение",
+                                            "В комплекте 'Покраска' нет позиций с расчетом!\n"
+                                            "Проверьте состав комплекта.")
+                else:
+                    QMessageBox.warning(self, "Внимание",
+                                        "Комплект 'Покраска' пуст!\n"
+                                        "Добавьте материалы в комплект через Номенклатуру.")
             else:
                 QMessageBox.warning(self, "Внимание",
-                                    "В справочнике материалов не задана цена на покраску!\n"
-                                    "Покраска не будет добавлена в смету.")
+                                    "Комплект 'Покраска' не найден в справочнике!\n"
+                                    "Создайте комплект в разделе Номенклатура → Комплекты.")
 
         return estimate_items
 

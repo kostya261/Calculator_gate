@@ -75,6 +75,17 @@ def table_exists(conn, table_name):
     return result
 
 
+def constraint_exists(conn, constraint_name):
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = %s
+    """, (constraint_name,))
+    result = cur.fetchone() is not None
+    cur.close()
+    return result
+
+
 def add_column_if_not_exists(conn, table_name, column_name, column_type, default=None):
     if not column_exists(conn, table_name, column_name):
         cur = conn.cursor()
@@ -92,6 +103,33 @@ def add_column_if_not_exists(conn, table_name, column_name, column_type, default
             cur.close()
         return True
     return False
+
+
+def ensure_unique_constraint(conn, table_name, columns, constraint_name=None):
+    if constraint_name is None:
+        constraint_name = f"{table_name}_{'_'.join(columns)}_key"
+
+    if not constraint_exists(conn, constraint_name):
+        cur = conn.cursor()
+        try:
+            columns_str = ', '.join(columns)
+            cur.execute(f"""
+                ALTER TABLE {table_name} 
+                ADD CONSTRAINT {constraint_name} 
+                UNIQUE ({columns_str})
+            """)
+            conn.commit()
+            print(f"✅ Создано уникальное ограничение: {constraint_name}")
+            cur.close()
+            return True
+        except Exception as e:
+            print(f"⚠️ Не удалось создать ограничение {constraint_name}: {e}")
+            conn.rollback()
+            cur.close()
+            return False
+    else:
+        print(f"ℹ️ Ограничение {constraint_name} уже существует")
+        return True
 
 
 # ============================================================
@@ -165,6 +203,7 @@ def create_tables_if_not_exists():
         add_column_if_not_exists(conn, 'materials', 'parent_id', 'INTEGER')
         add_column_if_not_exists(conn, 'materials', 'is_category', 'BOOLEAN', 'FALSE')
         add_column_if_not_exists(conn, 'materials', 'is_kit', 'BOOLEAN', 'FALSE')
+        add_column_if_not_exists(conn, 'materials', 'consumption_per_m2', 'DECIMAL(10,4)', '0')
 
         # clients
         cur.execute("""
@@ -259,7 +298,6 @@ def create_tables_if_not_exists():
         """)
         print("✅ Таблица estimate_items создана/проверена.")
 
-        # ДОБАВЛЯЕМ ПОЛЯ ДЛЯ КОМПЛЕКТОВ
         add_column_if_not_exists(conn, 'estimate_items', 'is_kit', 'BOOLEAN', 'FALSE')
         add_column_if_not_exists(conn, 'estimate_items', 'kit_parent_id', 'INTEGER')
         add_column_if_not_exists(conn, 'estimate_items', 'is_paint', 'BOOLEAN', 'FALSE')
@@ -302,12 +340,19 @@ def create_tables_if_not_exists():
                 material_id INTEGER REFERENCES materials(id) ON DELETE CASCADE,
                 quantity DECIMAL(10,2) DEFAULT 1,
                 unit VARCHAR(20),
+                consumption_per_unit DECIMAL(10,4) DEFAULT 0,
+                calculation_type VARCHAR(20) DEFAULT 'fixed',
                 notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(kit_id, material_id)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         print("✅ Таблица kit_items создана/проверена.")
+
+        add_column_if_not_exists(conn, 'kit_items', 'consumption_per_unit', 'DECIMAL(10,4)', '0')
+        add_column_if_not_exists(conn, 'kit_items', 'calculation_type', 'VARCHAR(20)', "'fixed'")
+        add_column_if_not_exists(conn, 'kit_items', 'notes', 'TEXT', "''")
+
+        ensure_unique_constraint(conn, 'kit_items', ['kit_id', 'material_id'], 'kit_items_kit_id_material_id_key')
 
         # СОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ ПО УМОЛЧАНИЮ
         cur.execute("SELECT COUNT(*) FROM users")
@@ -346,13 +391,18 @@ def create_tables_if_not_exists():
         conn.close()
         print("✅ Все таблицы созданы/проверены.")
         return True
+
     except OperationalError as e:
         print(f"❌ Ошибка при создании таблиц: {e}")
+        if conn:
+            conn.rollback()
+            cur.close()
+            conn.close()
         return False
 
 
 # ============================================================
-# 4. ЗАПОЛНЕНИЕ СПРАВОЧНИКОВ
+# 4. ЗАПОЛНЕНИЕ СПРАВОЧНИКОВ (БЕЗ ON CONFLICT)
 # ============================================================
 def fill_reference_data():
     try:
@@ -401,22 +451,105 @@ def fill_reference_data():
                     VALUES (%s, %s, %s, %s)
                 """, (name, unit, weight, parent_id))
 
-        # Покраска
-        cur.execute("SELECT COUNT(*) FROM materials WHERE name = 'Покраска'")
+        # КОМПЛЕКТ ПОКРАСКИ
+        print("🔄 Настройка покраски...")
+
+        cur.execute("SELECT COUNT(*) FROM kits WHERE name = 'Покраска'")
         if cur.fetchone()[0] == 0:
-            print("Добавляем услугу 'Покраска'...")
+            cur.execute("SELECT id FROM materials WHERE name = 'Комплекты' AND is_category = TRUE")
+            kit_category = cur.fetchone()
+            kit_category_id = kit_category[0] if kit_category else None
+
+            materials_paint = [
+                ('Работа (покраска)', 'м²', 1.0, 'Расходные работы по покраске'),
+                ('Ветошь', 'кг', 0.05, 'Расходный материал для покраски'),
+                ('Растворитель', 'л', 0.1, 'Расходный материал для покраски'),
+                ('Матрикс', 'л', 0.15, 'Расходный материал для покраски'),
+                ('Краска', 'л', 0.2, 'Расходный материал для покраски'),
+            ]
+
+            material_ids = {}
+            for name, unit, consumption, desc in materials_paint:
+                # Проверяем, есть ли уже такой материал
+                cur.execute("SELECT id FROM materials WHERE name = %s", (name,))
+                existing = cur.fetchone()
+
+                if existing:
+                    material_ids[name] = existing[0]
+                    # Обновляем расход
+                    cur.execute("""
+                        UPDATE materials 
+                        SET consumption_per_m2 = %s
+                        WHERE name = %s
+                    """, (consumption, name))
+                    print(f"  ✅ Обновлён материал: {name} (расход: {consumption} {unit}/м²)")
+                else:
+                    cur.execute("""
+                        INSERT INTO materials (name, unit, consumption_per_m2, description, parent_id)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING id
+                    """, (name, unit, consumption, desc, kit_category_id))
+                    row = cur.fetchone()
+                    if row:
+                        material_ids[name] = row[0]
+                        print(f"  ✅ Создан материал: {name} (расход: {consumption} {unit}/м²)")
+
             cur.execute("""
-                INSERT INTO materials (name, unit, retail_price, description) 
-                VALUES ('Покраска', 'м²', 0, 'Услуга покраски металлоконструкций')
+                INSERT INTO kits (name, description, retail_price)
+                VALUES ('Покраска', 'Комплект расходных материалов для покраски', 0)
+                RETURNING id
             """)
-            print("✅ Услуга 'Покраска' добавлена в справочник.")
+            kit_id = cur.fetchone()[0]
+            print(f"  ✅ Создан комплект: Покраска (id={kit_id})")
+
+            kit_items_data = {
+                'Работа (покраска)': {'quantity': 1, 'unit': 'м²', 'consumption': 1.0, 'calc_type': 'area'},
+                'Ветошь': {'quantity': 1, 'unit': 'кг', 'consumption': 0.05, 'calc_type': 'per_m2'},
+                'Растворитель': {'quantity': 1, 'unit': 'л', 'consumption': 0.1, 'calc_type': 'per_m2'},
+                'Матрикс': {'quantity': 1, 'unit': 'л', 'consumption': 0.15, 'calc_type': 'per_m2'},
+                'Краска': {'quantity': 1, 'unit': 'л', 'consumption': 0.2, 'calc_type': 'per_m2'},
+            }
+
+            for name, data in kit_items_data.items():
+                mat_id = material_ids.get(name)
+                if mat_id:
+                    # Проверяем, есть ли уже такая позиция в комплекте
+                    cur.execute("""
+                        SELECT id FROM kit_items 
+                        WHERE kit_id = %s AND material_id = %s
+                    """, (kit_id, mat_id))
+                    existing = cur.fetchone()
+
+                    if existing:
+                        # Обновляем
+                        cur.execute("""
+                            UPDATE kit_items 
+                            SET quantity = %s, unit = %s, consumption_per_unit = %s, calculation_type = %s
+                            WHERE kit_id = %s AND material_id = %s
+                        """, (data['quantity'], data['unit'], data['consumption'], data['calc_type'], kit_id, mat_id))
+                    else:
+                        # Вставляем
+                        cur.execute("""
+                            INSERT INTO kit_items (kit_id, material_id, quantity, unit, consumption_per_unit, calculation_type)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        """, (kit_id, mat_id, data['quantity'], data['unit'], data['consumption'], data['calc_type']))
+                    print(f"    └─ Добавлен {name}: {data['consumption']} {data['unit']}/м²")
+
+            print("  ✅ Комплект 'Покраска' создан с новыми полями")
+        else:
+            print("  ℹ️ Комплект 'Покраска' уже существует")
 
         conn.commit()
         cur.close()
         conn.close()
         return True
+
     except OperationalError as e:
         print(f"❌ Ошибка при заполнении справочников: {e}")
+        if conn:
+            conn.rollback()
+            cur.close()
+            conn.close()
         return False
 
 
@@ -431,13 +564,200 @@ def init_db():
         return False
     if not fill_reference_data():
         return False
+
+    try:
+        conn = get_connection()
+        ensure_unique_constraint(conn, 'kit_items', ['kit_id', 'material_id'], 'kit_items_kit_id_material_id_key')
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ Не удалось проверить ограничение: {e}")
+
     print("✅ База данных инициализирована успешно.")
     return True
 
 
 # ============================================================
-# 6. ТИПЫ БАЛОК
+# 6. ФУНКЦИИ ДЛЯ РАБОТЫ С КОМПЛЕКТАМИ (БЕЗ ON CONFLICT)
 # ============================================================
+
+def add_kit_item_full(kit_id, material_id, quantity=1, unit='', consumption_per_unit=0, calculation_type='fixed',
+                      notes=''):
+    """
+    Добавляет позицию в комплект с полной информацией о расчете
+    БЕЗ использования ON CONFLICT
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id FROM kit_items 
+            WHERE kit_id = %s AND material_id = %s
+        """, (kit_id, material_id))
+        existing = cur.fetchone()
+
+        if existing:
+            cur.execute("""
+                UPDATE kit_items 
+                SET quantity = %s, unit = %s, consumption_per_unit = %s, 
+                    calculation_type = %s, notes = %s
+                WHERE kit_id = %s AND material_id = %s
+            """, (quantity, unit, consumption_per_unit, calculation_type, notes, kit_id, material_id))
+        else:
+            cur.execute("""
+                INSERT INTO kit_items (kit_id, material_id, quantity, unit, consumption_per_unit, calculation_type, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (kit_id, material_id, quantity, unit, consumption_per_unit, calculation_type, notes))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка добавления позиции в комплект: {e}")
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
+
+
+def get_kit_items_full(kit_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT ki.id, ki.material_id, ki.quantity, ki.unit, 
+               ki.consumption_per_unit, ki.calculation_type, ki.notes,
+               m.name, m.unit, m.retail_price, m.consumption_per_m2
+        FROM kit_items ki
+        JOIN materials m ON m.id = ki.material_id
+        WHERE ki.kit_id = %s
+    """, (kit_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    result = []
+    for r in rows:
+        result.append({
+            'id': r[0],
+            'material_id': r[1],
+            'quantity': float(r[2]) if r[2] else 1,
+            'unit': r[3] or '',
+            'consumption_per_unit': float(r[4]) if r[4] else 0,
+            'calculation_type': r[5] or 'fixed',
+            'notes': r[6] or '',
+            'material_name': r[7],
+            'material_unit': r[8],
+            'material_price': float(r[9]) if r[9] else 0,
+            'consumption_per_m2': float(r[10]) if r[10] else 0
+        })
+    return result
+
+
+def calculate_kit_item_quantity(kit_item, context):
+    calc_type = kit_item.get('calculation_type', 'fixed')
+    consumption = kit_item.get('consumption_per_unit', 0)
+    base_quantity = kit_item.get('quantity', 1)
+
+    if calc_type == 'fixed':
+        return base_quantity
+    elif calc_type == 'per_m2':
+        area = context.get('area', 0)
+        return area * consumption
+    elif calc_type == 'per_m':
+        length_m = context.get('length', 0) / 1000
+        return length_m * consumption
+    elif calc_type == 'area':
+        return context.get('area', 0)
+    elif calc_type == 'length':
+        return context.get('length', 0) / 1000
+    else:
+        return base_quantity
+
+
+# ============================================================
+# 7. БАЗОВЫЕ ФУНКЦИИ ДЛЯ КОМПЛЕКТОВ (БЕЗ ON CONFLICT)
+# ============================================================
+
+def add_kit_item(kit_id, material_id, quantity=1, unit='', notes=''):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id FROM kit_items 
+            WHERE kit_id = %s AND material_id = %s
+        """, (kit_id, material_id))
+        existing = cur.fetchone()
+
+        if existing:
+            cur.execute("""
+                UPDATE kit_items 
+                SET quantity = %s, unit = %s, notes = %s
+                WHERE kit_id = %s AND material_id = %s
+            """, (quantity, unit, notes, kit_id, material_id))
+        else:
+            cur.execute("""
+                INSERT INTO kit_items (kit_id, material_id, quantity, unit, notes)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (kit_id, material_id, quantity, unit, notes))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка добавления позиции в комплект: {e}")
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
+
+
+def remove_kit_item(kit_item_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM kit_items WHERE id = %s", (kit_item_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка удаления позиции из комплекта: {e}")
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
+
+
+def get_kit_items(kit_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT ki.id, ki.material_id, ki.quantity, ki.unit, ki.notes,
+               m.name, m.unit, m.retail_price
+        FROM kit_items ki
+        JOIN materials m ON m.id = ki.material_id
+        WHERE ki.kit_id = %s
+    """, (kit_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [{
+        'id': r[0],
+        'material_id': r[1],
+        'quantity': float(r[2]) if r[2] else 1,
+        'unit': r[3] or '',
+        'notes': r[4] or '',
+        'material_name': r[5],
+        'material_unit': r[6],
+        'material_price': float(r[7]) if r[7] else 0
+    } for r in rows]
+
+
+# ============================================================
+# 8. ВСЕ ОСТАЛЬНЫЕ ФУНКЦИИ
+# ============================================================
+
 def get_beam_types():
     conn = get_connection()
     cur = conn.cursor()
@@ -512,15 +832,12 @@ def update_beam_prices(beam_name, purchase_price, retail_price):
         return False
 
 
-# ============================================================
-# 7. МАТЕРИАЛЫ
-# ============================================================
 def get_materials():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT id, sku, name, unit, weight_per_unit, purchase_price, retail_price, description,
-               parent_id, is_category, is_kit
+               parent_id, is_category, is_kit, COALESCE(consumption_per_m2, 0)
         FROM materials 
         WHERE is_category = FALSE
         ORDER BY name
@@ -532,7 +849,8 @@ def get_materials():
         'id': r[0], 'sku': r[1], 'name': r[2], 'unit': r[3],
         'weight_per_unit': r[4], 'purchase_price': r[5],
         'retail_price': r[6], 'description': r[7],
-        'parent_id': r[8], 'is_category': r[9], 'is_kit': r[10]
+        'parent_id': r[8], 'is_category': r[9], 'is_kit': r[10],
+        'consumption_per_m2': float(r[11]) if r[11] else 0
     } for r in rows]
 
 
@@ -541,7 +859,7 @@ def get_materials_hierarchy():
     cur = conn.cursor()
     cur.execute("""
         SELECT id, name, unit, weight_per_unit, purchase_price, retail_price, 
-               description, parent_id, is_category, is_kit
+               description, parent_id, is_category, is_kit, COALESCE(consumption_per_m2, 0)
         FROM materials 
         ORDER BY parent_id NULLS FIRST, name
     """)
@@ -559,7 +877,8 @@ def get_materials_hierarchy():
         'description': r[6] or '',
         'parent_id': r[7],
         'is_category': r[8] or False,
-        'is_kit': r[9] or False
+        'is_kit': r[9] or False,
+        'consumption_per_m2': float(r[10]) if r[10] else 0
     } for r in rows]
 
 
@@ -568,7 +887,7 @@ def get_material_by_id(material_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT id, sku, name, unit, weight_per_unit, purchase_price, retail_price, description,
-               parent_id, is_category, is_kit
+               parent_id, is_category, is_kit, COALESCE(consumption_per_m2, 0)
         FROM materials WHERE id = %s
     """, (material_id,))
     row = cur.fetchone()
@@ -579,19 +898,21 @@ def get_material_by_id(material_id):
             'id': row[0], 'sku': row[1], 'name': row[2], 'unit': row[3],
             'weight_per_unit': row[4], 'purchase_price': row[5],
             'retail_price': row[6], 'description': row[7],
-            'parent_id': row[8], 'is_category': row[9], 'is_kit': row[10]
+            'parent_id': row[8], 'is_category': row[9], 'is_kit': row[10],
+            'consumption_per_m2': float(row[11]) if row[11] else 0
         }
     return None
 
 
-def add_material(name, unit, weight, purchase_price, retail_price, sku=None, description='', parent_id=None):
+def add_material(name, unit, weight, purchase_price, retail_price, sku=None, description='', parent_id=None,
+                 consumption_per_m2=0):
     conn = get_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO materials (name, unit, weight_per_unit, purchase_price, retail_price, sku, description, parent_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (name, unit, weight, purchase_price, retail_price, sku, description, parent_id))
+            INSERT INTO materials (name, unit, weight_per_unit, purchase_price, retail_price, sku, description, parent_id, consumption_per_m2)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (name, unit, weight, purchase_price, retail_price, sku, description, parent_id, consumption_per_m2))
         conn.commit()
         cur.close()
         conn.close()
@@ -604,16 +925,18 @@ def add_material(name, unit, weight, purchase_price, retail_price, sku=None, des
         return False
 
 
-def update_material(material_id, name, unit, weight, purchase_price, retail_price, sku=None, description='', parent_id=None):
+def update_material(material_id, name, unit, weight, purchase_price, retail_price, sku=None, description='',
+                    parent_id=None, consumption_per_m2=0):
     conn = get_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
             UPDATE materials
             SET name = %s, unit = %s, weight_per_unit = %s,
-                purchase_price = %s, retail_price = %s, sku = %s, description = %s, parent_id = %s
+                purchase_price = %s, retail_price = %s, sku = %s, description = %s, parent_id = %s, consumption_per_m2 = %s
             WHERE id = %s
-        """, (name, unit, weight, purchase_price, retail_price, sku, description, parent_id, material_id))
+        """, (
+        name, unit, weight, purchase_price, retail_price, sku, description, parent_id, consumption_per_m2, material_id))
         conn.commit()
         cur.close()
         conn.close()
@@ -643,9 +966,6 @@ def delete_material(material_id):
         return False
 
 
-# ============================================================
-# 8. КАТЕГОРИИ
-# ============================================================
 def add_category(name, parent_id=None):
     conn = get_connection()
     cur = conn.cursor()
@@ -719,9 +1039,6 @@ def get_materials_by_category(category_id):
     return [{'id': r[0], 'name': r[1], 'unit': r[2], 'retail_price': r[3]} for r in rows]
 
 
-# ============================================================
-# 9. ЕДИНИЦЫ ИЗМЕРЕНИЯ
-# ============================================================
 def get_units():
     conn = get_connection()
     cur = conn.cursor()
@@ -733,7 +1050,45 @@ def get_units():
 
 
 # ============================================================
-# 10. КЛИЕНТЫ
+# 9. ЕДИНИЦЫ ИЗМЕРЕНИЯ
+# ============================================================
+
+def add_unit(name):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO units (name) VALUES (%s)", (name,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка добавления единицы измерения: {e}")
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
+
+
+def delete_unit(unit_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM units WHERE id = %s", (unit_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка удаления единицы измерения: {e}")
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
+
+
+# ============================================================
+# 10. КЛИЕНТЫ И АДРЕСА
 # ============================================================
 def get_clients():
     conn = get_connection()
@@ -837,9 +1192,6 @@ def delete_client(client_id):
         return False
 
 
-# ============================================================
-# 11. АДРЕСА
-# ============================================================
 def get_addresses(client_id):
     conn = get_connection()
     cur = conn.cursor()
@@ -936,7 +1288,7 @@ def delete_address(address_id):
 
 
 # ============================================================
-# 12. ПОИСК КЛИЕНТОВ
+# 11. ПОИСК КЛИЕНТОВ
 # ============================================================
 def get_all_clients_short():
     conn = get_connection()
@@ -995,215 +1347,7 @@ def get_client_addresses(client_id):
 
 
 # ============================================================
-# 13. СМЕТЫ (С ПОДДЕРЖКОЙ КОМПЛЕКТОВ)
-# ============================================================
-def save_estimate_with_kit(project_id, estimate_data, items, client_id=None,
-                           client_name='Не указан', client_address='Не указан'):
-    """Сохраняет смету с поддержкой комплектов"""
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO estimates (project_id, number, date, total_amount, 
-                                   client_id, client_name, client_address)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-        """, (project_id, estimate_data['number'], estimate_data['date'],
-              estimate_data['total_amount'], client_id, client_name, client_address))
-        estimate_id = cur.fetchone()[0]
-
-        # Словарь для маппинга: индекс в items -> реальный id в БД
-        item_id_map = {}
-
-        # Проход 1: сохраняем все НЕ-дочерние элементы (обычные и комплекты)
-        for idx, item in enumerate(items):
-            # Пропускаем дочерние элементы — сохраним их во втором проходе
-            if item.get('kit_parent_id') is not None:
-                continue
-
-            cur.execute("""
-                INSERT INTO estimate_items (
-                    estimate_id, material_name, length_mm, quantity, unit, 
-                    price, total, weight_kg, note, is_kit, kit_parent_id, is_paint
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """, (
-                estimate_id, item['name'], item.get('length', 0), item['quantity'], item['unit'],
-                item['price'], item['total'], item.get('weight', 0), item.get('note', ''),
-                item.get('is_kit', False), None,
-                item.get('is_paint', False)
-            ))
-
-            real_id = cur.fetchone()[0]
-            item_id_map[idx] = real_id
-
-            # Если это комплект — запоминаем маппинг для дочерних элементов
-            if item.get('is_kit', False):
-                print(f"  📦 Комплект сохранён: idx={idx} -> real_id={real_id}")
-
-        # Проход 2: сохраняем дочерние элементы, используя реальные id родителей
-        for item in items:
-            parent_idx = item.get('kit_parent_id')
-            if parent_idx is None:
-                continue
-
-            # Получаем реальный id родительского комплекта
-            real_parent_id = item_id_map.get(parent_idx)
-            if real_parent_id is None:
-                print(f"  ⚠️ Не найден родитель для дочернего элемента (parent_idx={parent_idx})")
-                continue
-
-            cur.execute("""
-                INSERT INTO estimate_items (
-                    estimate_id, material_name, length_mm, quantity, unit, 
-                    price, total, weight_kg, note, is_kit, kit_parent_id, is_paint
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                estimate_id, item['name'], item.get('length', 0), item['quantity'], item['unit'],
-                item['price'], item['total'], item.get('weight', 0), item.get('note', ''),
-                False, real_parent_id,
-                item.get('is_paint', False)
-            ))
-            print(f"    └─ Дочерний элемент сохранён: {item['name']} -> parent_id={real_parent_id}")
-
-        conn.commit()
-        cur.close()
-        conn.close()
-        print(f"✅ Смета сохранена (ID: {estimate_id})")
-        return estimate_id
-    except Exception as e:
-        print(f"❌ Ошибка сохранения сметы: {e}")
-        conn.rollback()
-        cur.close()
-        conn.close()
-        return None
-
-
-def save_estimate(project_id, estimate_data, items, client_id=None,
-                  client_name='Не указан', client_address='Не указан'):
-    """Сохраняет смету (совместимость со старым кодом)"""
-    return save_estimate_with_kit(project_id, estimate_data, items, client_id,
-                                  client_name, client_address)
-
-
-def get_estimates():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, number, date, total_amount, client_name
-        FROM estimates
-        ORDER BY date DESC, id DESC
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return [{
-        'id': r[0],
-        'number': r[1] or f"СМ-{r[0]}",
-        'date': r[2].strftime('%d.%m.%Y') if r[2] else '',
-        'total_amount': float(r[3]) if r[3] is not None else 0.0,
-        'client_name': r[4] or 'Не указан'
-    } for r in rows]
-
-
-def get_estimate_by_id(estimate_id):
-    """Возвращает смету с восстановленными комплектами"""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, number, date, total_amount, project_id, client_id, client_name, client_address
-        FROM estimates WHERE id = %s
-    """, (estimate_id,))
-    row = cur.fetchone()
-    if not row:
-        cur.close()
-        conn.close()
-        return None
-
-    estimate = {
-        'id': row[0],
-        'number': row[1],
-        'date': row[2],
-        'total_amount': float(row[3]) if row[3] else 0,
-        'project_id': row[4],
-        'client_id': row[5],
-        'client_name': row[6] or 'Не указан',
-        'client_address': row[7] or 'Не указан',
-        'items': []
-    }
-
-    # Получаем все позиции
-    cur.execute("""
-        SELECT id, material_name, length_mm, quantity, unit, price, total, weight_kg, note, is_kit, kit_parent_id, is_paint
-        FROM estimate_items WHERE estimate_id = %s
-        ORDER BY id
-    """, (estimate_id,))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    # Группируем по комплектам
-    kit_items = {}
-    regular_items = []
-
-    for r in rows:
-        item = {
-            'id': r[0],
-            'name': r[1],
-            'length': r[2] or 0,
-            'quantity': float(r[3]) if r[3] else 1,
-            'unit': r[4] or 'шт',
-            'price': float(r[5]) if r[5] else 0,
-            'total': float(r[6]) if r[6] else 0,
-            'weight': float(r[7]) if r[7] else 0,
-            'note': r[8] or '',
-            'is_kit': r[9] or False,
-            'kit_parent_id': r[10],
-            'is_paint': r[11] or False
-        }
-
-        if item['is_kit']:
-            kit_items[item['id']] = {
-                'kit': item,
-                'children': []
-            }
-        elif item['kit_parent_id'] is not None and item['kit_parent_id'] in kit_items:
-            kit_items[item['kit_parent_id']]['children'].append(item)
-        else:
-            regular_items.append(item)
-
-    # Собираем итоговый список
-    for kit_id, kit_data in kit_items.items():
-        estimate['items'].append(kit_data['kit'])
-        for child in kit_data['children']:
-            estimate['items'].append(child)
-
-    estimate['items'].extend(regular_items)
-
-    return estimate
-
-
-def delete_estimate(estimate_id):
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("DELETE FROM estimates WHERE id = %s", (estimate_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка удаления сметы: {e}")
-        conn.rollback()
-        cur.close()
-        conn.close()
-        return False
-
-
-# ============================================================
-# 14. КОМПЛЕКТЫ
+# 12. КОМПЛЕКТЫ (ОСНОВНЫЕ)
 # ============================================================
 def get_all_kits():
     conn = get_connection()
@@ -1332,70 +1476,204 @@ def delete_kit(kit_id):
         return False
 
 
-def add_kit_item(kit_id, material_id, quantity=1, unit='', notes=''):
+# ============================================================
+# 13. СМЕТЫ
+# ============================================================
+def save_estimate_with_kit(project_id, estimate_data, items, client_id=None,
+                           client_name='Не указан', client_address='Не указан'):
     conn = get_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO kit_items (kit_id, material_id, quantity, unit, notes)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (kit_id, material_id, quantity, unit, notes))
+            INSERT INTO estimates (project_id, number, date, total_amount, 
+                                   client_id, client_name, client_address)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (project_id, estimate_data['number'], estimate_data['date'],
+              estimate_data['total_amount'], client_id, client_name, client_address))
+        estimate_id = cur.fetchone()[0]
+
+        item_id_map = {}
+
+        for idx, item in enumerate(items):
+            if item.get('kit_parent_id') is not None:
+                continue
+
+            cur.execute("""
+                INSERT INTO estimate_items (
+                    estimate_id, material_name, length_mm, quantity, unit, 
+                    price, total, weight_kg, note, is_kit, kit_parent_id, is_paint
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                estimate_id, item['name'], item.get('length', 0), item['quantity'], item['unit'],
+                item['price'], item['total'], item.get('weight', 0), item.get('note', ''),
+                item.get('is_kit', False), None,
+                item.get('is_paint', False)
+            ))
+
+            real_id = cur.fetchone()[0]
+            item_id_map[idx] = real_id
+
+            if item.get('is_kit', False):
+                print(f"  📦 Комплект сохранён: idx={idx} -> real_id={real_id}")
+
+        for item in items:
+            parent_idx = item.get('kit_parent_id')
+            if parent_idx is None:
+                continue
+
+            real_parent_id = item_id_map.get(parent_idx)
+            if real_parent_id is None:
+                print(f"  ⚠️ Не найден родитель для дочернего элемента (parent_idx={parent_idx})")
+                continue
+
+            cur.execute("""
+                INSERT INTO estimate_items (
+                    estimate_id, material_name, length_mm, quantity, unit, 
+                    price, total, weight_kg, note, is_kit, kit_parent_id, is_paint
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                estimate_id, item['name'], item.get('length', 0), item['quantity'], item['unit'],
+                item['price'], item['total'], item.get('weight', 0), item.get('note', ''),
+                False, real_parent_id,
+                item.get('is_paint', False)
+            ))
+            print(f"    └─ Дочерний элемент сохранён: {item['name']} -> parent_id={real_parent_id}")
+
         conn.commit()
         cur.close()
         conn.close()
-        return True
+        print(f"✅ Смета сохранена (ID: {estimate_id})")
+        return estimate_id
     except Exception as e:
-        print(f"❌ Ошибка добавления позиции в комплект: {e}")
+        print(f"❌ Ошибка сохранения сметы: {e}")
         conn.rollback()
         cur.close()
         conn.close()
-        return False
+        return None
 
 
-def remove_kit_item(kit_item_id):
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("DELETE FROM kit_items WHERE id = %s", (kit_item_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка удаления позиции из комплекта: {e}")
-        conn.rollback()
-        cur.close()
-        conn.close()
-        return False
+def save_estimate(project_id, estimate_data, items, client_id=None,
+                  client_name='Не указан', client_address='Не указан'):
+    return save_estimate_with_kit(project_id, estimate_data, items, client_id,
+                                  client_name, client_address)
 
 
-def get_kit_items(kit_id):
+def get_estimates():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT ki.id, ki.material_id, ki.quantity, ki.unit, ki.notes,
-               m.name, m.unit, m.retail_price
-        FROM kit_items ki
-        JOIN materials m ON m.id = ki.material_id
-        WHERE ki.kit_id = %s
-    """, (kit_id,))
+        SELECT id, number, date, total_amount, client_name
+        FROM estimates
+        ORDER BY date DESC, id DESC
+    """)
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return [{
         'id': r[0],
-        'material_id': r[1],
-        'quantity': float(r[2]) if r[2] else 1,
-        'unit': r[3] or '',
-        'notes': r[4] or '',
-        'material_name': r[5],
-        'material_unit': r[6],
-        'material_price': float(r[7]) if r[7] else 0
+        'number': r[1] or f"СМ-{r[0]}",
+        'date': r[2].strftime('%d.%m.%Y') if r[2] else '',
+        'total_amount': float(r[3]) if r[3] is not None else 0.0,
+        'client_name': r[4] or 'Не указан'
     } for r in rows]
 
 
+def get_estimate_by_id(estimate_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, number, date, total_amount, project_id, client_id, client_name, client_address
+        FROM estimates WHERE id = %s
+    """, (estimate_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return None
+
+    estimate = {
+        'id': row[0],
+        'number': row[1],
+        'date': row[2],
+        'total_amount': float(row[3]) if row[3] else 0,
+        'project_id': row[4],
+        'client_id': row[5],
+        'client_name': row[6] or 'Не указан',
+        'client_address': row[7] or 'Не указан',
+        'items': []
+    }
+
+    cur.execute("""
+        SELECT id, material_name, length_mm, quantity, unit, price, total, weight_kg, note, is_kit, kit_parent_id, is_paint
+        FROM estimate_items WHERE estimate_id = %s
+        ORDER BY id
+    """, (estimate_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    kit_items = {}
+    regular_items = []
+
+    for r in rows:
+        item = {
+            'id': r[0],
+            'name': r[1],
+            'length': r[2] or 0,
+            'quantity': float(r[3]) if r[3] else 1,
+            'unit': r[4] or 'шт',
+            'price': float(r[5]) if r[5] else 0,
+            'total': float(r[6]) if r[6] else 0,
+            'weight': float(r[7]) if r[7] else 0,
+            'note': r[8] or '',
+            'is_kit': r[9] or False,
+            'kit_parent_id': r[10],
+            'is_paint': r[11] or False
+        }
+
+        if item['is_kit']:
+            kit_items[item['id']] = {
+                'kit': item,
+                'children': []
+            }
+        elif item['kit_parent_id'] is not None and item['kit_parent_id'] in kit_items:
+            kit_items[item['kit_parent_id']]['children'].append(item)
+        else:
+            regular_items.append(item)
+
+    for kit_id, kit_data in kit_items.items():
+        estimate['items'].append(kit_data['kit'])
+        for child in kit_data['children']:
+            estimate['items'].append(child)
+
+    estimate['items'].extend(regular_items)
+
+    return estimate
+
+
+def delete_estimate(estimate_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM estimates WHERE id = %s", (estimate_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка удаления сметы: {e}")
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
+
+
 # ============================================================
-# 15. ПОЛЬЗОВАТЕЛИ
+# 14. ПОЛЬЗОВАТЕЛИ
 # ============================================================
 import hashlib
 import secrets

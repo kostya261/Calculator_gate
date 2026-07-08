@@ -140,10 +140,10 @@ class MaterialTreeDialog(QDialog):
                 'id': cat['id']
             })
             item.setIcon(0, self._get_icon_for_type('category'))
-            # Делаем категорию невыбираемой
-            #item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
 
-            items_dict[cat['id']] = item
+            # Проверка на дубликаты
+            if cat['id'] not in items_dict:
+                items_dict[cat['id']] = item
 
         # Создаём элементы для материалов
         for mat in regular_materials:
@@ -159,7 +159,9 @@ class MaterialTreeDialog(QDialog):
             })
             item.setIcon(0, self._get_icon_for_type('material'))
 
-            items_dict[mat['id']] = item
+            # Проверка на дубликаты
+            if mat['id'] not in items_dict:
+                items_dict[mat['id']] = item
 
         # Создаём элементы для комплектов
         kit_items = {}
@@ -183,10 +185,11 @@ class MaterialTreeDialog(QDialog):
         # 1. Сначала добавляем корневые категории
         for cat in categories:
             if cat['parent_id'] is None:
-                self.tree.addTopLevelItem(items_dict[cat['id']])
+                if cat['id'] in items_dict:
+                    self.tree.addTopLevelItem(items_dict[cat['id']])
             else:
                 parent_item = items_dict.get(cat['parent_id'])
-                if parent_item:
+                if parent_item and cat['id'] in items_dict:
                     parent_item.addChild(items_dict[cat['id']])
 
         # 2. Добавляем комплекты в категорию "Комплекты" или в корень
@@ -201,10 +204,11 @@ class MaterialTreeDialog(QDialog):
         # 3. Добавляем материалы в их категории или в корень
         for mat in regular_materials:
             if mat['parent_id'] is None:
-                self.tree.addTopLevelItem(items_dict[mat['id']])
+                if mat['id'] in items_dict:
+                    self.tree.addTopLevelItem(items_dict[mat['id']])
             else:
                 parent_item = items_dict.get(mat['parent_id'])
-                if parent_item:
+                if parent_item and mat['id'] in items_dict:
                     parent_item.addChild(items_dict[mat['id']])
 
         self.tree.expandAll()
@@ -414,6 +418,7 @@ class MaterialTreeDialog(QDialog):
                 else:
                     QMessageBox.warning(self, "Ошибка", "Не удалось удалить комплект!")
 
+
 class KitItemsDialog(QDialog):
     """Диалог редактирования позиций комплекта"""
 
@@ -431,15 +436,17 @@ class KitItemsDialog(QDialog):
         layout.addWidget(self.info_label)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
+        self.table.setColumnCount(7)  # Увеличили количество колонок
         self.table.setHorizontalHeaderLabels(
-            ["ID", "Материал", "Кол-во", "Ед.", "Сумма"]
+            ["ID", "Материал", "Кол-во", "Ед.", "Расход", "Тип расчёта", "Сумма"]
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setColumnWidth(0, 40)
-        self.table.setColumnWidth(1, 250)
-        self.table.setColumnWidth(2, 80)
-        self.table.setColumnWidth(3, 60)
+        self.table.setColumnWidth(1, 200)
+        self.table.setColumnWidth(2, 70)
+        self.table.setColumnWidth(3, 50)
+        self.table.setColumnWidth(4, 80)
+        self.table.setColumnWidth(5, 120)
         layout.addWidget(self.table)
 
         btn_layout = QHBoxLayout()
@@ -467,7 +474,7 @@ class KitItemsDialog(QDialog):
         self.load_data()
 
     def load_data(self):
-        items = db.get_kit_items(self.kit_id)
+        items = db.get_kit_items_full(self.kit_id)  # Используем новую функцию
         self.table.setRowCount(len(items))
 
         total_price = 0
@@ -476,8 +483,23 @@ class KitItemsDialog(QDialog):
             self.table.setItem(row, 1, QTableWidgetItem(item['material_name']))
             self.table.setItem(row, 2, QTableWidgetItem(f"{item['quantity']:.2f}"))
             self.table.setItem(row, 3, QTableWidgetItem(item['unit'] or item['material_unit']))
+
+            # Показываем расход
+            consumption_text = f"{item['consumption_per_unit']:.4f}" if item['consumption_per_unit'] > 0 else "—"
+            self.table.setItem(row, 4, QTableWidgetItem(consumption_text))
+
+            # Показываем тип расчета
+            calc_types = {
+                'fixed': 'Фиксированное',
+                'per_m2': 'Расход на м²',
+                'per_m': 'Расход на м',
+                'area': 'По площади',
+                'length': 'По длине'
+            }
+            self.table.setItem(row, 5, QTableWidgetItem(calc_types.get(item['calculation_type'], 'fixed')))
+
             subtotal = item['quantity'] * item['material_price']
-            self.table.setItem(row, 4, QTableWidgetItem(f"{subtotal:.2f}"))
+            self.table.setItem(row, 6, QTableWidgetItem(f"{subtotal:.2f}"))
             total_price += subtotal
 
         self.table.resizeColumnsToContents()
@@ -495,16 +517,87 @@ class KitItemsDialog(QDialog):
             if not material:
                 return
 
-            quantity, ok = QInputDialog.getDouble(
+            # Выбираем тип расчета
+            calc_types = {
+                'fixed': 'Фиксированное количество',
+                'per_m2': 'Расход на м² (покраска)',
+                'per_m': 'Расход на метр погонный',
+                'area': 'Зависит от площади (например, работа)',
+                'length': 'Зависит от длины'
+            }
+
+            calc_type, ok = QInputDialog.getItem(
                 self,
-                "Количество",
-                f"Введите количество для '{material['name']}':",
-                1, 0.01, 10000, 2
+                "Тип расчета",
+                "Как будет рассчитываться количество?\n\n"
+                "Фиксированное - всегда одно и то же количество\n"
+                "Расход на м² - умножается на площадь (для покраски)\n"
+                "Расход на м - умножается на длину\n"
+                "По площади - равно площади (для работ)\n"
+                "По длине - равно длине в метрах",
+                list(calc_types.values()),
+                0, False
             )
             if not ok:
                 return
 
-            if db.add_kit_item(self.kit_id, material['id'], quantity, material['unit']):
+            # Находим ключ типа расчета
+            calc_type_key = {v: k for k, v in calc_types.items()}[calc_type]
+
+            # Запрашиваем дополнительные параметры
+            consumption = 0
+            quantity = 1
+
+            if calc_type_key == 'fixed':
+                quantity, ok = QInputDialog.getDouble(
+                    self,
+                    "Количество",
+                    "Введите фиксированное количество:",
+                    1, 0.01, 10000, 2
+                )
+                if not ok:
+                    return
+
+            elif calc_type_key in ['per_m2', 'per_m']:
+                consumption, ok = QInputDialog.getDouble(
+                    self,
+                    "Норма расхода",
+                    f"Введите расход на 1 {'м²' if calc_type_key == 'per_m2' else 'метр'}:",
+                    0.1, 0.001, 100, 3
+                )
+                if not ok:
+                    return
+
+                # Если это расходный материал, обновляем consumption_per_m2 у материала
+                if calc_type_key == 'per_m2' and consumption > 0:
+                    db.update_material(
+                        material['id'],
+                        material['name'],
+                        material['unit'],
+                        material['weight_per_unit'] or 0,
+                        material['purchase_price'] or 0,
+                        material['retail_price'] or 0,
+                        material.get('sku'),
+                        material.get('description', ''),
+                        material.get('parent_id'),
+                        consumption  # обновляем расход
+                    )
+
+            elif calc_type_key in ['area', 'length']:
+                # Для этих типов количество будет рассчитываться автоматически
+                quantity = 1
+
+            # Сохраняем в комплект с новыми полями
+            success = db.add_kit_item_full(
+                kit_id=self.kit_id,
+                material_id=material['id'],
+                quantity=quantity,
+                unit=material['unit'],
+                consumption_per_unit=consumption,
+                calculation_type=calc_type_key
+            )
+
+            if success:
                 self.load_data()
                 QMessageBox.information(self, "Готово", "Материал добавлен в комплект!")
             else:

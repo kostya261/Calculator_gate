@@ -386,7 +386,12 @@ class MaterialEditDialog(QDialog):
         self.retail_price_edit.setPlaceholderText("0.00")
         form_layout.addRow("Розничная цена:", self.retail_price_edit)
 
-        # ⚠️ КАТЕГОРИЯ С КНОПКОЙ ...
+        # НОВОЕ ПОЛЕ: Расход на м²
+        self.consumption_edit = QLineEdit()
+        self.consumption_edit.setPlaceholderText("0.00 (например: 0.2 л/м²)")
+        form_layout.addRow("Расход на м²:", self.consumption_edit)
+
+        # Категория с кнопкой ...
         category_layout = QHBoxLayout()
         self.parent_combo = QComboBox()
         self.parent_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -428,35 +433,26 @@ class MaterialEditDialog(QDialog):
             self.unit_combo.addItem(unit['name'], unit['id'])
 
     def load_categories(self):
-        """Загружает все категории в выпадающий список с правильными отступами"""
         self.parent_combo.clear()
         self.parent_combo.addItem("(Корневая категория)", None)
 
         materials = db.get_materials_hierarchy()
         categories = [m for m in materials if m.get('is_category', False)]
 
-        # Находим корневые категории (parent_id IS NULL)
         root_cats = [cat for cat in categories if cat['parent_id'] is None]
         root_cats.sort(key=lambda x: x['name'])
 
-        # Рекурсивно добавляем категории с отступами
         def add_category_with_indent(cat, indent=0):
             display_name = "  " * indent + f"📁 {cat['name']}"
             self.parent_combo.addItem(display_name, cat['id'])
 
-            # Находим дочерние категории
             children = [c for c in categories if c['parent_id'] == cat['id']]
             children.sort(key=lambda x: x['name'])
             for child in children:
                 add_category_with_indent(child, indent + 1)
 
-        # Добавляем все корневые категории
         for root_cat in root_cats:
             add_category_with_indent(root_cat)
-
-    def _get_category_depth(self, category_id, categories):
-        """Больше не нужен, но оставляем для совместимости"""
-        return 0
 
     def load_data(self):
         material = db.get_material_by_id(self.material_id)
@@ -473,13 +469,14 @@ class MaterialEditDialog(QDialog):
             weight = material['weight_per_unit'] if material['weight_per_unit'] is not None else 0
             purchase = material['purchase_price'] if material['purchase_price'] is not None else 0
             retail = material['retail_price'] if material['retail_price'] is not None else 0
+            consumption = material.get('consumption_per_m2', 0) or 0
 
             self.weight_edit.setText(f"{weight:.3f}")
             self.purchase_price_edit.setText(f"{purchase:.2f}")
             self.retail_price_edit.setText(f"{retail:.2f}")
+            self.consumption_edit.setText(f"{consumption:.4f}")
             self.desc_edit.setText(material['description'] or '')
 
-            # Устанавливаем родительскую категорию
             parent_id = material.get('parent_id')
             if parent_id is not None:
                 index = self.parent_combo.findData(parent_id)
@@ -491,7 +488,6 @@ class MaterialEditDialog(QDialog):
                 self.parent_combo.setCurrentIndex(0)
 
     def select_category_from_tree(self):
-        """Открывает диалог выбора категории с деревом"""
         current_id = self.parent_combo.currentData()
         dialog = SelectCategoryDialog(self, current_id)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -501,7 +497,6 @@ class MaterialEditDialog(QDialog):
                 if index >= 0:
                     self.parent_combo.setCurrentIndex(index)
             else:
-                # Корневая категория
                 self.parent_combo.setCurrentIndex(0)
 
     def save(self):
@@ -532,19 +527,22 @@ class MaterialEditDialog(QDialog):
         if retail_price is None:
             return
 
+        consumption = safe_float(self.consumption_edit.text(), "Расход на м²")
+        if consumption is None:
+            return
+
         sku = self.sku_edit.text().strip() or None
         unit = self.unit_combo.currentText()
         description = self.desc_edit.toPlainText().strip()
-
         parent_id = self.parent_combo.currentData()
 
         if self.material_id:
             success = db.update_material(
-                self.material_id, name, unit, weight, purchase_price, retail_price, sku, description, parent_id
+                self.material_id, name, unit, weight, purchase_price, retail_price, sku, description, parent_id, consumption
             )
         else:
             success = db.add_material(
-                name, unit, weight, purchase_price, retail_price, sku, description, parent_id
+                name, unit, weight, purchase_price, retail_price, sku, description, parent_id, consumption
             )
 
         if success:
